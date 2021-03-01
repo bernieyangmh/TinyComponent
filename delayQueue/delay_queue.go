@@ -3,6 +3,7 @@ package delayQueue
 import (
 	"container/heap"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -16,16 +17,24 @@ func NewDelayQueue(size, buff int, interval time.Duration) *DelayQueue {
 	dq.Queue = make([]DelayItem, 0, size)
 	dq.readChan = make(chan interface{}, buff)
 	dq.closeChan = make(chan int8)
+	dq.popChan = make(chan struct{})
+	dq.pushChan = make(chan DelayItem)
+	dq.popResChan = make(chan DelayItem)
+	dq.mutx = new(sync.Mutex)
 	heap.Init(&dq.Queue)
 	return dq
 }
 
 type DelayQueue struct {
-	ticker    *time.Ticker
-	Queue     delayQueue
-	state     int32
-	readChan  chan interface{}
-	closeChan chan int8
+	ticker     *time.Ticker
+	Queue      delayQueue
+	state      int32
+	readChan   chan interface{}
+	closeChan  chan int8
+	popChan    chan struct{}
+	pushChan   chan DelayItem
+	popResChan chan DelayItem
+	mutx       *sync.Mutex
 }
 
 // Start之前必须有goroutine消费readChan
@@ -54,7 +63,7 @@ func (dq *DelayQueue) Start() {
 					if !ok {
 						break
 					}
-					if now.Sub(di.T) > 0 {
+					if now.Sub(di.T) >= 0 {
 						dq.readChan <- di.Data
 						continue
 					}
@@ -74,6 +83,24 @@ func (dq *DelayQueue) Start() {
 				close(dq.closeChan)
 				break
 				// already clear
+			}
+		}
+	}()
+
+	go func() {
+		for {
+			select {
+			case <-dq.closeChan:
+				// TODO: update to quit gracefully
+				// TODO: maybe need to dump state somewhere?
+				return
+			case <-dq.popChan:
+				popD, ok := dq.pop().(DelayItem)
+				if ok {
+					dq.popResChan <- popD
+				}
+			case pushD := <-dq.pushChan:
+				dq.push(pushD)
 			}
 		}
 	}()
@@ -100,6 +127,11 @@ func (dq *DelayQueue) Push(x DelayItem) error {
 	if atomic.LoadInt32(&dq.state) != 0 {
 		return fmt.Errorf("queue already closed")
 	}
+	dq.pushChan <- x
+	return nil
+}
+
+func (dq *DelayQueue) push(x DelayItem) error {
 	heap.Push(&dq.Queue, x)
 	return nil
 }
@@ -108,14 +140,19 @@ func (dq *DelayQueue) Pop() (x DelayItem, ok bool) {
 	if dq.Queue.Len() == 0 {
 		return DelayItem{}, false
 	}
-	return heap.Pop(&dq.Queue).(DelayItem), true
+	dq.popChan <- struct{}{}
+	return <-dq.popResChan, true
 }
 
-func (dq *DelayQueue) Peek() (x *DelayItem, ok bool) {
+func (dq *DelayQueue) pop() (x interface{}) {
+	return heap.Pop(&dq.Queue)
+}
+
+func (dq *DelayQueue) Peek() (x DelayItem, ok bool) {
 	if dq.Queue.Len() > 0 {
-		return &dq.Queue[0], true
+		return dq.Queue[0], true
 	}
-	return nil, false
+	return DelayItem{}, false
 }
 
 type DelayItem struct {
@@ -146,3 +183,5 @@ func (q *delayQueue) Pop() interface{} {
 	*q = old[0 : n-1]
 	return x
 }
+
+//https://husobee.github.io/heaps/golang/safe/2016/09/01/safe-heaps-golang.html
