@@ -1,3 +1,6 @@
+// 延迟队列
+// push 指定时间戳
+
 package delayQueue
 
 import (
@@ -10,7 +13,7 @@ import (
 
 //1.队列的初始cap, 避免频繁分配
 //2.readChan的buf, 0是阻塞Chan，需考虑消费速度
-//3.每次判断到达定时的间隔，按需设置
+//3.每次判断到达定时的间隔，按需设置 interval < future - now
 func NewDelayQueue(size, buff int, interval time.Duration) *DelayQueue {
 	dq := new(DelayQueue)
 	dq.ticker = time.NewTicker(interval)
@@ -18,6 +21,7 @@ func NewDelayQueue(size, buff int, interval time.Duration) *DelayQueue {
 	dq.readChan = make(chan interface{}, buff)
 	dq.closeChan = make(chan int8)
 	dq.popChan = make(chan struct{})
+	dq.finChan = make(chan struct{})
 	dq.pushChan = make(chan DelayItem)
 	dq.popResChan = make(chan DelayItem)
 	dq.mutx = new(sync.Mutex)
@@ -32,12 +36,12 @@ type DelayQueue struct {
 	readChan   chan interface{}
 	closeChan  chan int8
 	popChan    chan struct{}
+	finChan    chan struct{}
 	pushChan   chan DelayItem
 	popResChan chan DelayItem
 	mutx       *sync.Mutex
 }
 
-// Start之前必须有goroutine消费readChan
 func (dq *DelayQueue) Start() {
 	go func() {
 		for {
@@ -80,7 +84,7 @@ func (dq *DelayQueue) Start() {
 					dq.readChan <- di.Data
 					continue
 				}
-				close(dq.closeChan)
+				dq.finish()
 				break
 				// already clear
 			}
@@ -90,10 +94,6 @@ func (dq *DelayQueue) Start() {
 	go func() {
 		for {
 			select {
-			case <-dq.closeChan:
-				// TODO: update to quit gracefully
-				// TODO: maybe need to dump state somewhere?
-				return
 			case <-dq.popChan:
 				popD, ok := dq.pop().(DelayItem)
 				if ok {
@@ -101,6 +101,15 @@ func (dq *DelayQueue) Start() {
 				}
 			case pushD := <-dq.pushChan:
 				dq.push(pushD)
+			case <-dq.finChan:
+				close(dq.closeChan)
+				close(dq.readChan)
+				close(dq.pushChan)
+				close(dq.popResChan)
+				close(dq.popChan)
+				close(dq.finChan)
+				dq.ticker.Stop()
+				return
 			}
 		}
 	}()
@@ -153,6 +162,15 @@ func (dq *DelayQueue) Peek() (x DelayItem, ok bool) {
 		return dq.Queue[0], true
 	}
 	return DelayItem{}, false
+}
+
+func (dq *DelayQueue) IsClose() bool {
+	return atomic.LoadInt32(&dq.state) == 1
+}
+
+func (dq *DelayQueue) finish() {
+	dq.finChan <- struct{}{}
+	return
 }
 
 type DelayItem struct {
