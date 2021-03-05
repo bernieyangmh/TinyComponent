@@ -50,12 +50,11 @@ func BenchmarkMutilWriter(b *testing.B) {
 			dq.Push(d)
 		}
 	}()
-	go func() {
-		for i := 0; i < b.N; i++ {
-			d := DelayItem{Data: i, T: time.Now().Add(time.Second * time.Duration(rand.Intn(3)))}
-			dq.Push(d)
-		}
-	}()
+
+	for i := 0; i < b.N; i++ {
+		d := DelayItem{Data: i, T: time.Now().Add(time.Second * time.Duration(rand.Intn(3)))}
+		dq.Push(d)
+	}
 }
 
 func BenchmarkMutilReader(b *testing.B) {
@@ -85,7 +84,7 @@ func BenchmarkMutilReader(b *testing.B) {
 
 func BenchmarkMutilWriterReader(b *testing.B) {
 	rand.Seed(time.Now().UnixNano())
-	dq := NewDelayQueue(100, 0, time.Millisecond*10)
+	dq := NewDelayQueue(100, 0, time.Millisecond*1)
 
 	go func() {
 		for _ = range dq.readChan {
