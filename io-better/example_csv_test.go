@@ -10,10 +10,12 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"runtime"
 	"syscall"
+	"testing"
 )
 
-func WriteCsvMetadata(w http.ResponseWriter, filename string, titleLine []string) error {
+func WriteCsvHeader(w http.ResponseWriter, filename string, titleLine []string) error {
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment;filename=%s.csv", filename))
 	w.Header().Set("Content-Type", "application/csv")
 	w.Header().Set("Transfer-Encoding", "chunked")
@@ -45,16 +47,30 @@ func ReadToCsv(reader io.Reader, writer io.Writer) (err error) {
 		csvWriter = csv.NewWriter(csvBuff)
 		scanner   = bufio.NewScanner(reader)
 	)
+	n := 0
 	scanner.Split(bufio.ScanLines)
 	for scanner.Scan() {
 		if err = NormalParse(csvWriter, scanner.Bytes()); err != nil {
 			return err
 		}
+		n++
+		if n == 4000 {
+			csvWriter.Flush()
+		}
 		if _, err = writer.Write(csvBuff.Bytes()); err != nil {
 			return err
 		}
+		csvBuff.Reset()
 	}
-	return nil
+	csvWriter.Flush()
+	if _, err = writer.Write(csvBuff.Bytes()); err != nil {
+		return err
+	}
+	csvBuff.Reset()
+	if scanner.Err() != nil {
+		return scanner.Err()
+	}
+	return io.EOF
 }
 
 // eg: fields split by "\001"
@@ -67,7 +83,6 @@ func NormalParse(w *csv.Writer, data []byte) error {
 	if err := w.Write(lines); err != nil {
 		return err
 	}
-	w.Flush()
 	return nil
 }
 
@@ -76,6 +91,12 @@ func TransforCsv(w http.ResponseWriter, r *http.Request) {
 		err error
 	)
 	defer func() {
+		if r := recover(); r != nil {
+			buf := make([]byte, 64<<10)
+			buf = buf[:runtime.Stack(buf, false)]
+			fmt.Println(fmt.Sprintf("TransforCsv panic error(%v)  \n%s", r, buf))
+		}
+
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			w.Write([]byte("error file"))
@@ -83,20 +104,29 @@ func TransforCsv(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	filePath := ""
-	dir, err := os.OpenFile(filePath, os.O_WRONLY, 0)
-
-	if err = WriteCsvMetadata(w, "test", []string{"test", "time"}); err != nil {
-		fmt.Println("WriteCsvMetadata error(%v)", err)
+	filePath := "/Users/yangminghui/Desktop/aid.csv"
+	dir, err := os.OpenFile(filePath, os.O_RDONLY, 0)
+	if err != nil {
+		fmt.Printf("OpenFile error(%v)", err)
+		return
+	}
+	if err = WriteCsvHeader(w, "test", []string{"test", "time"}); err != nil {
+		fmt.Printf("WriteCsvHeader error(%v)\n", err)
+		return
 	}
 
 	if err = ParallelStreamIO(w, dir, WriteCsvResp, ReadToCsv); err != nil {
-		fmt.Println("ParallelStreamIO error(%v)", err)
+		fmt.Printf("ParallelStreamIO error(%v)\n", err)
+		return
 	}
 	return
 }
 
-func main() {
-	http.HandleFunc("/csv/", TransforCsv)
-	http.ListenAndServe("127.0.0.0:8000", nil)
+func TestHttpServer(t *testing.T) {
+	t.Run("run server", func(t *testing.T) {
+		http.HandleFunc("/csv/", TransforCsv)
+		if err := http.ListenAndServe(":8000", nil); err != nil {
+			t.Logf("ListenAndServe error(%v)", err)
+		}
+	})
 }

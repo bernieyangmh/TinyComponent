@@ -15,14 +15,14 @@ func ParallelStreamIO(writer io.Writer, reader io.Reader, wf func(w io.Writer, r
 
 	gGroup.Go(func(ctx context.Context) error {
 		if err = rf(reader, wp); err != nil {
-			wp.Close()
+			return wp.Close()
 		}
 		return nil
 	})
 
 	gGroup.Go(func(ctx context.Context) error {
 		if err = wf(writer, rp); err != nil {
-			wp.Close()
+			return wp.Close()
 		}
 		return nil
 	})
