@@ -1,7 +1,6 @@
 package io_better
 
 import (
-	"bernieyangmh.com/TinyComponent/utils"
 	"bufio"
 	"bytes"
 	"encoding/csv"
@@ -13,6 +12,8 @@ import (
 	"runtime"
 	"syscall"
 	"testing"
+
+	"bernieyangmh.com/TinyComponent/utils"
 )
 
 func WriteCsvHeader(w http.ResponseWriter, filename string, titleLine []string) error {
